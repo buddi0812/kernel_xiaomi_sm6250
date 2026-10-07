@@ -1,0 +1,60 @@
+# Builds the miatoll kernel on GitHub's Linux machines (no Linux PC needed).
+# Runs on every push to branch 16, or by hand from the Actions tab.
+# Output artifact: Image + dtb.img + dtbo.img, which tools/mkboot.py packs into a boot.img.
+name: Build kernel
+
+on:
+  push:
+    branches: ["16"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash  # bash -eo pipefail: a failing make fails the job even when piped to tee
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex cpio lz4 libssl-dev libelf-dev \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi python-is-python3
+
+      # Google's clang 22.0.2 (r596125): the exact compiler the stock VoltageOS kernel was built with.
+      - name: Fetch AOSP clang r596125
+        run: |
+          mkdir -p "$HOME/clang"
+          curl -sSfL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r596125.tar.gz \
+            | tar -xz -C "$HOME/clang"
+          echo "$HOME/clang/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          args="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip
+                OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CLANG_TRIPLE=aarch64-linux-gnu-
+                CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+                LOCALVERSION=-ci${{ github.run_number }}"
+          make $args vendor/xiaomi/miatoll_defconfig
+          make -j"$(nproc)" $args 2>&1 | tee build.log
+          ls -la out/arch/arm64/boot/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-ci${{ github.run_number }}
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtb.img
+            out/arch/arm64/boot/dtbo.img
+            out/.config
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log-ci${{ github.run_number }}
+          path: build.log
